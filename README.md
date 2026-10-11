@@ -192,52 +192,50 @@ change.
 
 **1. Write the parser — `app/normalise.py`**
 
-```python
-def parse_document_ai(raw):
-    if not isinstance(raw, dict) or "pages" not in raw:
-        raise UnsupportedOcrFormat("raw_output is not a Document AI result")
-    pages = []
-    for p in raw["pages"]:
-        w, h = p["dimension"]["width"], p["dimension"]["height"]
-        lines = []
-        for ln in p.get("lines") or []:
-            v = ln["layout"]["boundingPoly"]["vertices"]     # field names follow the real API
-            xs = [pt["x"] for pt in v]
-            ys = [pt["y"] for pt in v]
-            lines.append(line(
-                index=len(lines),
-                text=ln["text"],
-                box=bbox(min(xs) / w, min(ys) / h, max(xs) / w, max(ys) / h),
-                conf=confidence(ln.get("confidence") or None, 1),
-                source="engine",
-            ))
-        pages.append(page(p["pageNumber"], lines,
-                          native_size=(w, h), unit="pixel", size_source="page"))
-    return pages
-```
+A parser is a function `parse_<engine>(raw)` taking the envelope's `raw_output` and returning
+the canonical page list. The envelope around it is engine-independent: `normalise()` already
+checks `ocr`/`source`, dispatches on `ocr.engine`, and maps parser exceptions to 422s — the
+parser only decides what counts as *its* engine's `raw_output`.
 
-The contract every parser keeps:
+**What the export needs to have (input):**
 
-- **bbox** is `[x0, y0, x1, y1]` in ratios 0–1: divide every coordinate by **that page's own**
-  width/height — pixels or inches cancel, no cross-engine conversion ever happens.
-  `parse_rapidocr` (35 lines) is the smallest complete example in the file.
-- **confidence** on a 0–1 scale, or `None` where the engine gives none; `source=` records
-  whether the value is engine-reported or derived.
-- **errors:** raise `UnsupportedOcrFormat` when `raw_output` isn't this engine's shape at all,
-  `MalformedExport` when it is but is broken (missing page size, wrong types). Both become 422
-  rejections; neither crashes the batch.
+- a page identifier per page (the page number or equivalent)
+- each page's width and height **in the same units as its line coordinates** — pixels,
+  inches or already-normalised ratios all work; any unit is fine
+- at least one OCR line somewhere in the export (an export with zero lines is rejected)
+- per line: the recognised text and a positional box — four corner points or x0/y0/x1/y1;
+  a line without geometry is dropped, not failed
+- per line, optionally: a confidence value on the engine's own scale (0–100 or 0–1), or none
 
-**2. Register it — one line in `PARSERS`**
+**What the parser must output :**
 
-```python
-PARSERS["google-document-ai"] = parse_document_ai
-```
 
-The key must match the export envelope's `ocr.engine` string exactly. Dispatch, the
-unknown-engine rejection and the wrong-payload rejection are all handled by `normalise()` — no
-other stage knows engines exist.
+- one `page(page_number, lines, native_size=(w, h), unit=…, size_source=…)` per export page.
+  
+  `native_size` keeps the engine's own units (`page_size_known` is false if the engine
+  publishes no dimensions), `size_source` records where the dimensions came from
+- one `line(index, text, bbox, confidence, source)` per OCR line, in reading order
+  
+  `bbox` from `bbox(...)`: `[x0, y0, x1, y1]` in ratios 0–1, origin top-left — divide every
+  coordinate by **that page's own** width/height, so pixels or inches cancel and no
+  cross-engine conversion ever happens
+   
+  `confidence` from `confidence(value, scale)`: 0–1, or `None` where the engine gives none;
+  
+  `source=` records whether the value is engine-reported or derived
+- errors: raise `UnsupportedOcrFormat` when `raw_output` isn't this engine's shape at all,
+  `MalformedExport` when it is but is broken (missing page size, wrong types). Both become
+  422 rejections; neither crashes the batch.
 
-**3. Test it — `tests/test_normalise.py`**
+`parse_rapidocr` in the same file is the smallest complete example.
+
+**2. Register it: one line in `PARSERS`**
+
+Add `PARSERS["<engine-string>"] = parse_<engine>`, where the key matches the export
+envelope's `ocr.engine` string exactly. Dispatch, the unknown-engine rejection and the
+wrong-payload rejection are all handled by `normalise()` — no other stage knows engines exist.
+
+**3. Tests `tests/test_normalise.py`**
 
 Feed a small sample export and assert line counts and text, bbox conversion, confidence handling
 and page-size availability, like the existing per-engine tests. Bump `NORMALISER_VERSION` only if
@@ -255,8 +253,8 @@ Nothing downstream changes: classify, load, chunking and search read only the ca
 
 ## How to switch the embedding model and re-embed
 
-Example: switch from `BAAI/bge-small-en-v1.5` to `sentence-transformers/all-MiniLM-L6-v2`
-(both 384-d, so no migration needed):
+Switching from `BAAI/bge-small-en-v1.5` to `sentence-transformers/all-MiniLM-L6-v2`
+(both 384d, so no migration needed):
 
 ```bash
 # 1. re-embed every loaded/embedded document under the new model
@@ -276,7 +274,7 @@ Notes:
 
 - Or pass `--model` per run as above (any model [fastembed](https://github.com/qdrant/fastembed)
   supports); the model is downloaded on first use unless baked into the image (see the `Dockerfile`).
-- **Different vector size?** `chunks.embedding` is `vector(384)`. Models with another dimension
+- **For different vector sizes:** `chunks.embedding` is `vector(384)`. Models with another dimension
   need a migration first (`TRUNCATE chunks`, `ALTER TABLE chunks ALTER COLUMN embedding TYPE
   vector(N)`, rebuild the HNSW index) and `DIMENSION` updated in `app/embed.py`; `reembed`
   refuses a mismatched model rather than writing bad vectors.
