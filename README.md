@@ -10,7 +10,12 @@ Stack: FastAPI · PostgreSQL 16 + pgvector · Docker Compose · Python 3.12.
 ```bash
 docker compose up -d --build          # Postgres + pgvector and the API on :8000
 curl localhost:8000/health            # {"status":"ok","postgres":"16.15","pgvector":"0.8.7"}
-scripts/seed.sh                       # ingest the three sample documents (idempotent)
+
+# ingest the three sample documents (idempotent: 201 first time, 200 on re-run)
+for f in medical_certificate receipt referral_letter; do
+  curl -sS -o /dev/null -w "$f.json: %{http_code}\n" -F "file=@Assessment_Documents/$f.json" \
+    localhost:8000/documents
+done
 ```
 
 Useful lifecycle commands:
