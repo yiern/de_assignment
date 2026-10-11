@@ -11,12 +11,13 @@ Stack: FastAPI · PostgreSQL 16 + pgvector · Docker Compose · Python 3.12.
 docker compose up -d --build          # Postgres + pgvector and the API on :8000
 curl localhost:8000/health            # {"status":"ok","postgres":"16.15","pgvector":"0.8.7"}
 
-# ingest the three sample documents (idempotent: 201 first time, 200 on re-run)
-for f in medical_certificate receipt referral_letter; do
-  curl -sS -o /dev/null -w "$f.json: %{http_code}\n" -F "file=@Assessment_Documents/$f.json" \
-    localhost:8000/documents
-done
+# ingest an OCR engine export: one file per request, repeat for each record
+curl -F "file=@path/to/your_export.json" localhost:8000/documents
 ```
+
+That is the whole setup — point `POST /documents` at your OCR exports (any of the three engine
+formats), or at a PDF/image and the pipeline OCRs it locally. The three exports under
+`Assessment_Documents/` can be POSTed as-is if you want a quick smoke test.
 
 Useful lifecycle commands:
 
